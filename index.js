@@ -8,14 +8,14 @@ app.use(express.json());
 // ====== ENV VARS (SET THESE IN RENDER) ======
 const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_WHATSAPP = process.env.TWILIO_WHATSAPP_NUMBER; // e.g. "whatsapp:+14155238886"
-const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP;          // your own WA: "whatsapp:+92...."
+const TWILIO_WHATSAPP = process.env.TWILIO_WHATSAPP_NUMBER; // example: whatsapp:+14155238886
+const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP;          // your own WhatsApp
 
 const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
-// ====== SIMPLE IN-MEMORY STORAGE ======
-const sessions = {};  // conversation state per user
-const bookings = [];  // all bookings
+// ====== SIMPLE STORAGE ======
+const sessions = {};
+const bookings = [];
 
 function sendWhatsApp(to, body) {
   return client.messages.create({
@@ -25,7 +25,6 @@ function sendWhatsApp(to, body) {
   });
 }
 
-// ====== HELPERS ======
 function formatBookings(list) {
   return list
     .map(
@@ -35,37 +34,33 @@ function formatBookings(list) {
     .join("\n");
 }
 
-// ====== HOME (OPTIONAL) ======
+// ====== HOME ======
 app.get("/", (req, res) => {
   res.send("📸 Photography WhatsApp Bot is running.");
 });
 
 // ====== MAIN WEBHOOK ======
 app.post("/webhook", async (req, res) => {
-  const from = req.body.From;                 // whatsapp:+1608...
+  const from = req.body.From;
   const name = req.body.ProfileName || "Friend";
   const body = (req.body.Body || "").trim();
 
   console.log("📩 Incoming:", { from, name, body });
 
-  if (!from || !body) {
-    return res.send("OK");
-  }
+  if (!from || !body) return res.send("OK");
 
-  // Get or init session
   let session = sessions[from] || { step: "idle", temp: {} };
-
   let reply = "";
 
-  // --- BOOKING FLOW STEPS ---
+  // ====== BOOKING FLOW ======
   if (session.step === "ask_date") {
     session.temp.date = body;
     session.step = "ask_time";
-    reply = `Great, ${name}! What *time* do you want? (e.g. 5:00 PM)`;
+    reply = `Great, ${name}! What *time* do you want? (e.g. 1:30 PM)`;
   } else if (session.step === "ask_time") {
     session.temp.time = body;
     session.step = "ask_service";
-    reply = `Nice. What *type of session* is this? (e.g. Wedding, Birthday, Studio Shoot)`;
+    reply = `Nice. What *package* are you booking? (Kayak / Bamboo Raft / Premium / etc)`;
   } else if (session.step === "ask_service") {
     session.temp.service = body;
 
@@ -77,90 +72,197 @@ app.post("/webhook", async (req, res) => {
       service: session.temp.service,
       createdAt: new Date().toISOString(),
     };
+
     bookings.push(booking);
 
     reply =
-      `✅ Your session is booked!\n\n` +
+      `✅ *Your booking is confirmed!*\n\n` +
       `📅 Date: ${booking.date}\n` +
       `⏰ Time: ${booking.time}\n` +
-      `📸 Service: ${booking.service}\n\n` +
-      `If you want to see your bookings, type *my bookings*.`;
+      `🌊 Package: ${booking.service}\n\n` +
+      `To book more, type *book*.\nTo see your schedule, type *my bookings*.`;
 
-    // reset session
     session = { step: "idle", temp: {} };
   }
 
-  // --- IF NOT IN A FLOW, HANDLE COMMANDS ---
+  // ====== COMMANDS ======
   else if (/^menu$/i.test(body)) {
     reply =
-      `Hi ${name}! 👋 I can help you with:\n\n` +
-      `1️⃣ *Booking* a session — type: book\n` +
-      `2️⃣ *Our services & prices* — type: prices\n` +
-      `3️⃣ *Studio location* — type: location\n` +
-      `4️⃣ *See your bookings* — type: my bookings\n`;
+      `Hi ${name}! 👋 Here is what I can do:\n\n` +
+      `• *book* — book a session\n` +
+      `• *prices* — see all packages\n` +
+      `• *location* — get directions\n` +
+      `• *hours* — business hours\n` +
+      `• *transport* — transportation\n` +
+      `• *edits* — extra edit info\n` +
+      `• *my bookings* — see your bookings`;
     session = { step: "idle", temp: {} };
   }
 
   else if (/book|booking|schedule/i.test(body)) {
     reply =
       `Awesome, ${name}! Let's book your session.\n\n` +
-      `Please send the *date* in this format: YYYY-MM-DD\n` +
-      `Example: 2025-11-30`;
+      `Please send the *date* like this:\n` +
+      `👉 2025-12-30`;
     session = { step: "ask_date", temp: {} };
   }
 
-  else if (/my booking|my bookings|my schedule/i.test(body)) {
+  else if (/my booking|my bookings/i.test(body)) {
     const my = bookings.filter((b) => b.client === from);
+
     if (!my.length) {
-      reply = `You don't have any bookings yet, ${name}. Type *book* to schedule a session.`;
+      reply = `You have no bookings yet. Type *book* to schedule.`;
     } else {
-      reply =
-        `📅 Your bookings:\n\n` +
-        formatBookings(my) +
-        `\n\nIf you want to book another, type *book*.`;
+      reply = `📅 *Your Bookings:*\n\n${formatBookings(my)}`;
     }
+
     session = { step: "idle", temp: {} };
   }
 
-  // --- FAQ / ANSWERING QUESTIONS ---
-  else if (/price|charges|rates|package/i.test(body.toLowerCase())) {
+  // ====== PRICES (FULL OWNER DATA) ======
+  else if (/price|charges|rates|package|packages|kayak|bamboo/i.test(body.toLowerCase())) {
     reply =
-      `📸 *Our Photography Packages*\n\n` +
-      `• Basic (1 hour): Rs 8,000\n` +
-      `• Standard (2 hours): Rs 15,000\n` +
-      `• Premium (Half-day): Rs 25,000\n\n` +
-      `Includes edited photos + online album.\n` +
-      `Type *book* to schedule a session.`;
+`🌊 *CLEAR KAYAK RATES*  
+
+🔹 *Individual – $175*  
+- Photoshoot  
+- Videos  
+- Cocktails, Shots or Beverages  
+- 40+ Photos & Videos  
+- Best 4 edited FREE  
+
+🔹 *Couple – $250*  
+- Photoshoot  
+- Videos  
+- Cocktails, Shots or Beverages  
+- 40+ Photos & Videos  
+- Best 6 edited FREE  
+
+🔹 *Group (3+ persons) – $160 pp*  
+- Photoshoot  
+- Videos  
+- Cocktails, Shots or Beverages  
+- 40+ Photos & Videos  
+- Best 4 edited FREE  
+
+🔥 *Add-Ons*  
+- Hookah: $40 (Refill $10)  
+- Hookah Lounge: $100  
+- Lounge: $50  
+- Flowers for Kayak: $50  
+- Floating Dress: $100  
+
+━━━━━━━━━━━━━━━
+
+🎋 *BAMBOO RAFT RATES*  
+
+🔹 *Individual – $200*  
+- Photoshoot  
+- Videos  
+- Cocktails / Beverages  
+- 40+ Photos & Videos  
+- Best 4 pics + 1 video edited FREE  
+
+🔹 *Couple – $250*  
+- Photoshoot  
+- Videos  
+- Cocktails / Beverages  
+- 40+ Photos & Videos  
+- Best 6 pics + 2 videos edited FREE  
+
+🔥 *Add-Ons*  
+- Hookah: $40 (Refill $10)  
+- Hookah Lounge: $100  
+- Lounge: $50  
+
+━━━━━━━━━━━━━━━
+
+💎 *PREMIUM PACKAGE – $350*  
+- Photoshoot  
+- Videos  
+- Cocktails / Beverages  
+- 40+ Photos & Videos  
+- Best 8 edited FREE  
+- Flower Décor  
+- Champagne  
+- Fruit Tray  
+
+To book, type *book*.`;
   }
 
-  else if (/location|address/i.test(body.toLowerCase())) {
+  // ====== LOCATION ======
+  else if (/location|address|map|where/i.test(body.toLowerCase())) {
     reply =
-      `📍 *Studio Location*\n` +
-      `XYZ Studio, Lahore\n` +
-      `Google Maps: https://maps.google.com\n\n` +
-      `Type *book* to schedule a session.`;
+`📍 *LOCATION*  
+Search in Google Maps for: *Diverse Sauzen*  
+We are right across the big beach gate.
+
+Map: https://maps.app.goo.gl/p6SP24xCeebAUz8f7
+
+🚕 *Transportation Available*  
+Contact Javier (Loyalty Transportation):  
+📞 +59995200661`;
   }
 
-  else if (/service|services|what do you do/i.test(body.toLowerCase())) {
+  // ====== HOURS ======
+  else if (/hours|timing|open|close|opening/i.test(body.toLowerCase())) {
     reply =
-      `📸 *Our Services*\n\n` +
-      `• Wedding & Engagement Shoots\n` +
-      `• Birthday & Event Coverage\n` +
-      `• Studio Portraits & Family Shoots\n` +
-      `• Product Photography\n\n` +
-      `Type *prices* to see packages or *book* to schedule.`;
+`⏰ *BUSINESS HOURS*
+
+Friday: 10 AM – 2 PM  
+Saturday: 10 AM – 2 PM  
+Sunday: 10 AM – 2 PM  
+Monday: 10 AM – 2 PM  
+Tuesday: 10 AM – 2 PM  
+Wednesday: 10 AM – 2 PM  
+Thursday: 10 AM – 2 PM  
+
+We are currently OPEN 🌞`;
   }
 
+  // ====== EXTRA EDITS ======
+  else if (/edit|edits|extra edit/i.test(body.toLowerCase())) {
+    reply =
+`🎨 *EXTRA PHOTO EDITS*
+
+PayPal:  
+📩 dushiviews@gmail.com  
+
+💲 *$10 per edit*  
+Please write your phone number + number of edits in the description.
+
+⏳ If you don’t receive edits within 4 days, please remind us ❤️`;
+  }
+
+  // ====== PAYMENT & BOOKING ======
+  else if (/payment|paypal|pay/i.test(body.toLowerCase())) {
+    reply =
+`📩 *HOW TO BOOK*  
+
+We will send you a PayPal link.  
+Once payment is confirmed, your booking is locked in.
+
+Please send:  
+• Your full name  
+• Your email  
+• Preferred date  
+• Preferred time`;
+  }
+
+  // ====== FALLBACK ======
   else {
-    // default fallback
     reply =
-      `Hi ${name}! 😊 I'm your photography assistant.\n\n` +
-      `You can type:\n` +
-      `• *book* – to book a session\n` +
-      `• *prices* – to see packages\n` +
-      `• *location* – to get studio address\n` +
-      `• *my bookings* – to see your bookings\n` +
-      `• *menu* – to see all options again`;
+`Hi ${name}! 👋  
+I can help you with:
+
+• *book* — Book a session  
+• *prices* — Kayak & Bamboo packages  
+• *location* — Directions  
+• *hours* — Business hours  
+• *transport* — Travel assistance  
+• *edits* — Extra edit info  
+• *my bookings* — View your bookings  
+• *menu* — See all options again`;
   }
 
   // save session
@@ -170,34 +272,29 @@ app.post("/webhook", async (req, res) => {
   try {
     await sendWhatsApp(from, reply);
   } catch (err) {
-    console.error("❌ Error sending WhatsApp:", err?.message || err);
+    console.error("❌ Error sending WhatsApp:", err);
   }
 
   res.send("OK");
 });
 
-// ====== DAILY AGENDA (CALL THIS AT 8AM VIA CRON PING) ======
+// ====== DAILY AGENDA (CRON) ======
 app.get("/daily-agenda", async (req, res) => {
-  if (!ADMIN_WHATSAPP) {
-    return res.status(500).send("ADMIN_WHATSAPP not set");
-  }
+  if (!ADMIN_WHATSAPP) return res.status(500).send("ADMIN_WHATSAPP missing");
 
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const today = new Date().toISOString().slice(0, 10);
   const todayBookings = bookings.filter((b) => b.date === today);
 
-  let text = `📅 *Today's bookings* (${today})\n\n`;
+  let text = `📅 *Today's Bookings* (${today})\n\n`;
 
-  if (!todayBookings.length) {
-    text += `No bookings today.`;
-  } else {
-    text += formatBookings(todayBookings);
-  }
+  if (!todayBookings.length) text += "No bookings today.";
+  else text += formatBookings(todayBookings);
 
   try {
     await sendWhatsApp(ADMIN_WHATSAPP, text);
-    res.send("Daily agenda sent.");
+    res.send("Daily agenda sent");
   } catch (err) {
-    console.error("❌ Error sending daily agenda:", err?.message || err);
+    console.error("❌ Agenda error:", err);
     res.status(500).send("Failed to send agenda");
   }
 });
@@ -207,4 +304,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Bot running on port " + PORT);
 });
+
 
